@@ -1,9 +1,7 @@
 using Bogus;
-using Bogus.DataSets;
 using GT.Connect.Management.Demo.ConnectApi.DeviceConfig;
 using GT.Connect.Management.Demo.ConnectApi.Organisation;
 using GT.Connect.Management.Demo.ConnectApi.People;
-using System;
 using System.Diagnostics;
 using System.Reflection;
 
@@ -87,7 +85,7 @@ public class ApiDemos : ApiTestBase
                 var p = new Person();  //This is the source of fake data
                 person = await api.AddPerson(Settings.TenantId, company.NodeId,
                     new(cmpNode.Id, company.Id, p.FirstName, p.LastName, i.ToString(),
-                        (1000 + i).ToString(), (1000 + i).ToString(), "", "EN", "", "", "", "", ""));
+                        (1000 + i).ToString(), (1000 + i).ToString(), "", "EN", "", "", "", "", "", null, null));
 
                 //add an update, stressing how you have to copy every field
             }
@@ -122,7 +120,7 @@ public class ApiDemos : ApiTestBase
 
         //find the devices on the root partner node
         var apiResponse = await api.GetDevices(Settings.TenantId, rootNode.Id,
-            new(new(nameof(Device.SerialNumber), "fp-gt8~99990001", Operators.CaseInsensitiveStringEquals)));
+            new(new(nameof(Device.SerialNumber), "FP-GT8-BL~909000020", Operators.CaseInsensitiveStringEquals)));
 
         if (apiResponse.StatusCode != System.Net.HttpStatusCode.OK)
         {
@@ -365,7 +363,7 @@ public class ApiDemos : ApiTestBase
     {
         //Set this to the path of the GT8 application package
         var location = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-        var appFileName = Path.Combine(location, "Resources", "background.jpg");
+        var appFileName = Path.Combine(location!, "Resources", "background.jpg");
 
         //Note for simplicity we've hardcoded the FileTypeId here, but you can get them by
         //  calling the /api/tenants/{{tenantId}}/device-config/fileTypes/family/{{deviceFamily}} or
@@ -539,7 +537,7 @@ public class ApiDemos : ApiTestBase
     }
 
     /// <summary>
-    /// This eaxmple will create a consent policy and assign it to a company
+    /// This example will create a consent policy and assign it to a company
     /// // and send it to all devices under the company node.
     /// </summary>
     /// <returns></returns>
@@ -582,6 +580,210 @@ public class ApiDemos : ApiTestBase
             Configs: [],
             Consents: [linkReponse.Id],
             Firmwares: []));
+    }
+
+
+
+    /// <summary>
+    /// This example shows how to perform a sync of users from an external system.
+    /// In this example we generate a sample list of employees and clocks and sync.
+    /// The sync process will first add or update the clock groups then remove any users that should no longer exist.
+    /// The process is then repeated for employees, adding or updating them as needed.
+    /// In  both cases, the external ID is used as the common identifier between the external system and GTC.
+    /// It is assumed that the external ID is unique and immutable for each clock group/employee.
+    /// For Employees, badge code and are also required to be unique if provided.
+    /// </summary>
+    /// <returns></returns>
+    [TestMethod]
+    public async Task SyncEmployeeInCompany()
+    {
+        var api = await GetClient();
+        var mapper = new MapperClasses();
+
+        //Find the partner node
+        var rootNode = (await api.GetNodes(Settings.TenantId,
+            new(new(nameof(NodeResponse.NodeType), NodeType.Partner.ToString(), Operators.Equals))))
+            .Single();
+
+        //Look for the 'Api Demo' node 
+        var childNodes = await api.GetNodeAndAllChildren(Settings.TenantId, rootNode.Id);
+        var cpNode = childNodes.SingleOrDefault(x => x.Name == "Api Demo");
+        Assert.IsNotNull(cpNode, "Api Demo node not found, please run CreateTestCompany first.");
+
+        //Now Look for the 'InGen' node and create if not found
+        childNodes = await api.GetNodeAndAllChildren(Settings.TenantId, cpNode.Id);
+        var cmpNode = childNodes.SingleOrDefault(x => x.Name == "InGen");
+        Assert.IsNotNull(cmpNode, "InGen node not found, please run CreateTestCompany first.");
+
+        //Find the Company so we can get it's ID
+        var company = await api.GetCompanyByNodeId(Settings.TenantId, cmpNode.Id);
+        Assert.IsNotNull(company);
+
+        //Get the existing clock groups
+        var clockGroupsResponse = await api.GetClockGroups(Settings.TenantId, cmpNode.Id);
+        await clockGroupsResponse.EnsureSuccessStatusCodeAsync();
+        var clockGroups = clockGroupsResponse.Content ?? [];
+
+        //Add or update the clock groups based on the sample data
+        foreach (var sampleClockGroup in SampleClockGroups)
+        {
+            var cg = clockGroups.SingleOrDefault(x => x.ExternalId == sampleClockGroup.ExternalId);
+            if (cg is null)
+            {
+                //Does not exist, so create it
+                await api.AddClockGroup(Settings.TenantId, cmpNode.Id, new ClockGroupRequest(Settings.TenantId, cmpNode.Id, company.Id, sampleClockGroup.ExternalId, sampleClockGroup.Name, ""));
+            }
+            else
+            {
+                //Exists so see if the name has changed
+                if (cg.Name != sampleClockGroup.Name)
+                {
+                    //Update the name if it does not match
+                    var cgUpdateRequest = mapper.Map(cg) with
+                    {
+                        Name = sampleClockGroup.Name,
+                    };
+                    await api.UpdateClockGroup(Settings.TenantId, cmpNode.Id, cg.Id, cgUpdateRequest);
+                }
+            }
+        }
+
+        //Get a list of clock groups that need to be deleted
+        var toDelete = clockGroups.Where(x => !SampleClockGroups.Any(y => x.ExternalId == y.ExternalId)).ToList();
+        foreach (var cg in toDelete)
+        {
+            if (cg.ExternalId == "1")
+            {
+                //We don't delete the default clock group, so skip it
+                continue;
+            }
+
+            //Delete the clock group - All users must be removed first
+            await api.DeleteClockGroup(Settings.TenantId, cmpNode.Id, cg.Id);
+        }
+
+
+        //Add employees
+
+        //First refresh the list of clock groups
+        //Get the existing clock groups
+        clockGroupsResponse = await api.GetClockGroups(Settings.TenantId, cmpNode.Id);
+        await clockGroupsResponse.EnsureSuccessStatusCodeAsync();
+        clockGroups = clockGroupsResponse.Content ?? [];
+
+        //Then loop over the list of sample employees and add or update them
+        var sampleEmployees = GenerateSampleEmployees();
+        foreach (var employee in sampleEmployees)
+        {
+            //The external ID is the common identifier between external systems and GTC
+            var apiResponse = await api.GetPersonByExternalId(Settings.TenantId, company.NodeId, employee.Id);
+            PersonResponse? person = null;
+            if (apiResponse.StatusCode == System.Net.HttpStatusCode.OK)
+            {
+                person = apiResponse.Content ?? throw new ApplicationException("Person should not be null here.");
+                //Do a simple check if anything has changed, and if so update
+                if (person.Surname != employee.GivenName ||
+                    person.Firstname != employee.FamilyName ||
+                    person.BadgeCode != employee.BadgeCode ||
+                    person.KeyPad != employee.KeypadId ||
+                    person.Language != employee.Language)
+                {
+                    //Update the person with the new details
+                    var updateCommand = mapper.Map(person) with
+                    {
+                        Surname = employee.GivenName,
+                        Firstname = employee.FamilyName,
+                        BadgeCode = employee.BadgeCode,
+                        KeyPad = employee.KeypadId,
+                        Language = employee.Language
+                    };
+                    person = await api.UpdatePerson(Settings.TenantId, company.NodeId, person.Id, updateCommand);
+                }
+
+                foreach (var group in employee.DistributionGroups)
+                {
+                    //Match the external ID to a clock Group
+                    var cg = clockGroups.Single(x => x.ExternalId == group);
+                    //Add the person to the distribution group
+                    await api.AddPersonToClockGroup(Settings.TenantId, company.NodeId, cg.Id, person.Id);
+                }
+            }
+            else
+            {
+                person = await api.AddPerson(Settings.TenantId, company.NodeId,
+                    new(cmpNode.Id, company.Id, employee.GivenName, employee.FamilyName, employee.Id,
+                        employee.BadgeCode, employee.KeypadId, "", employee.Language, "", "", "", "", "", null, null));
+
+                foreach (var group in employee.DistributionGroups)
+                {
+                    //Match the external ID to a clock Group
+                    var cg = clockGroups.Single(x => x.ExternalId == group);
+                    //Add the person to the distribution group
+                    await api.AddPersonToClockGroup(Settings.TenantId, company.NodeId, cg.Id, person.Id);
+                }
+            }
+        }
+
+        //Reconcile employee list
+        var peopleResponse = await api.GetPeople(Settings.TenantId, company.NodeId);
+        await peopleResponse.EnsureSuccessStatusCodeAsync();
+        var people = peopleResponse.Content ?? [];
+        var peopleToDelete = people.Where(x => !sampleEmployees.Any(y => x.ExternalId == y.Id)).ToList();
+        foreach (var person in peopleToDelete)
+        {
+            //Delete the clock group - All users must be removed first
+            await api.DeletePerson(Settings.TenantId, cmpNode.Id, person.Id);
+        }
+
+        Assert.IsTrue(true);
+    }
+
+    private static List<(string ExternalId, string Name)> SampleClockGroups =
+    [
+            ("10", "Aberdeen"),
+            ("11", "Bangor"),
+            ("12", "Bath"),
+            ("13", "Birmingham"),
+            ("14", "Cambridge"),
+            ("15", "Canterbury"),
+            ("16", "Gloucester"),
+            ("17", "Leicester"),
+            ("18", "Milton Keynes"),
+            ("19", "Nottingham"),
+            ("20", "Ripon"),
+            ("21", "Southampton"),
+            ("22", "Wells"),
+            ("23", "York")
+        ];
+
+
+    public record SampleEmployee(Guid RawId, string Id, string GivenName, string FamilyName, string Language,
+        List<string>DistributionGroups, string BadgeCode, string KeypadId);
+
+    public static List<SampleEmployee> GenerateSampleEmployees()
+    {
+        Randomizer.Seed = new Random(8675309);
+        var data = Enumerable.Range(0, 100)
+            .Select(x => new Person())
+            .Select(x =>
+            {
+                var id = x.Random.Digits(5).Select(x => x.ToString()).Aggregate((i, j) => i + j);
+                return new SampleEmployee (x.Random.Uuid(), id, x.FirstName, x.LastName, "en",
+                    [SampleClockGroups[x.Random.Number(SampleClockGroups.Count - 1)].ExternalId],
+                    id, id );
+            })
+            .ToList();
+
+        //Deal with duplicate external IDs
+        var duplicates = data.GroupBy(x => x.Id).Where(x => x.Count() > 1).SelectMany(x => x.ToArray()).ToList();
+        foreach (var duplicate in duplicates)
+        {
+            data.Remove(duplicate);
+        }
+
+        var itemsToSkip = DateTime.UtcNow.Hour * 2;
+        data = [.. data.Skip(itemsToSkip).Take(10)];
+        return data;
     }
 }
 

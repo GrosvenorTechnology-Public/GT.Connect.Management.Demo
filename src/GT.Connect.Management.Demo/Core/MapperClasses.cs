@@ -1,5 +1,6 @@
 ﻿using GT.Connect.Management.Demo.ConnectApi.DeviceConfig;
 using GT.Connect.Management.Demo.ConnectApi.Organisation;
+using GT.Connect.Management.Demo.ConnectApi.People;
 using Riok.Mapperly.Abstractions;
 
 namespace GT.Connect.Management.Demo;
@@ -32,4 +33,20 @@ public partial class MapperClasses
     [MapperIgnoreSource(nameof(NodeResponse.LastModifiedById))]
     [MapperIgnoreSource(nameof(NodeResponse.LastModifiedOn))]
     public partial UpdateNodeCommmand Map(NodeResponse device);
+
+    [MapperIgnoreSource(nameof(ClockGroupResponse.CreatedById))]
+    [MapperIgnoreSource(nameof(ClockGroupResponse.CreatedOn))]
+    [MapperIgnoreSource(nameof(ClockGroupResponse.LastModifiedById))]
+    [MapperIgnoreSource(nameof(ClockGroupResponse.LastModifiedOn))]
+    public partial ClockGroupUpdateRequest Map(ClockGroupResponse source);
+
+
+    [MapperIgnoreSource(nameof(PersonResponse.Id))]
+    [MapperIgnoreSource(nameof(PersonResponse.TenantId))]
+    [MapperIgnoreSource(nameof(PersonResponse.IsDeleted))]
+    [MapperIgnoreSource(nameof(PersonResponse.CreatedById))]
+    [MapperIgnoreSource(nameof(PersonResponse.CreatedOn))]
+    [MapperIgnoreSource(nameof(PersonResponse.LastModifiedById))]
+    [MapperIgnoreSource(nameof(PersonResponse.LastModifiedOn))]
+    public partial PersonRequest Map(PersonResponse source);
 }

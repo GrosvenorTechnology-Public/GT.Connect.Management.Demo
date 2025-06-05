@@ -3,6 +3,10 @@
 [Headers("Authorization: Bearer")]
 public interface IConnectApiOrganisation
 {
+    [Get("/api/tenants/{tenantId}/org/node/{nodeId}")]
+    [Headers("X-Api-Version", "2.0")]
+    Task<NodeResponse> GetNodesV2(Guid tenantId, int nodeId);
+
     [Get("/api/tenants/{tenantId}/org/nodes")]
     Task<List<NodeResponse>> GetNodes(Guid tenantId, [Query] SieveQueryParams? query = null);
 

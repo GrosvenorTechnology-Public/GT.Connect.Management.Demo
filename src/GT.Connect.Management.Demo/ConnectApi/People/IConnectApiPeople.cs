@@ -31,7 +31,7 @@ public interface IConnectApiPeople
     Task<PersonResponse> GetPerson(Guid tenantId, int nodeId, Guid personId);
 
     [Put("/api/tenants/{tenantId}/people/{nodeId}/{personId}")]
-    Task<ApiResponse<PersonResponse>> UpdatePerson(Guid tenantId, int nodeId, Guid personId, [Body] PersonRequest person);
+    Task<PersonResponse> UpdatePerson(Guid tenantId, int nodeId, Guid personId, [Body] PersonRequest person);
 
     [Delete("/api/tenants/{tenantId}/people/{nodeId}/{personId}")]
     Task<bool> DeletePerson(Guid tenantId, int nodeId, Guid personId);
@@ -44,6 +44,12 @@ public interface IConnectApiPeople
 
     [Post("/api/tenants/{tenantId}/people/{nodeId}/clockGroups")]
     Task<ClockGroupResponse> AddClockGroup(Guid tenantId, int nodeId, [Body] ClockGroupRequest clockGroup);
+
+    [Put("/api/tenants/{tenantId}/people/{nodeId}/clockGroups/{id}")]
+    Task<ClockGroupResponse> UpdateClockGroup(Guid tenantId, int nodeId, Guid id, [Body] ClockGroupUpdateRequest clockGroup);
+
+    [Delete("/api/tenants/{tenantId}/people/{nodeId}/clockGroups/{id}")]
+    Task<bool> DeleteClockGroup(Guid tenantId, int nodeId, Guid id);
 
     [Post("/api/tenants/{tenantId}/people/{nodeId}/clockGroup/{clockGroupId}/members/{personId}")]
     Task<ApiResponse<BaseModifiyableObject>> AddPersonToClockGroup(Guid tenantId, int nodeId, Guid clockGroupId, Guid personId);
