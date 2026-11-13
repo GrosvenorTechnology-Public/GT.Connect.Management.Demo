@@ -1,36 +1,30 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+
+    <!-- xUnit v3 test projects are executables running on Microsoft.Testing.Platform -->
+    <OutputType>Exe</OutputType>
+
+    <!-- Credentials are read from user secrets / environment variables, see README.md -->
+    <UserSecretsId>gt-connect-management-demo</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="Resources\background.jpg" />
+    <PackageReference Include="Bogus" Version="35.6.5" />
+    <PackageReference Include="Gridify" Version="2.20.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="11.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="11.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="11.0.0" />
+    <PackageReference Include="coverlet.MTP" Version="10.1.0" />
+    <PackageReference Include="Refit" Version="16.4.0" />
+    <PackageReference Include="Riok.Mapperly" Version="4.3.1" />
+    <PackageReference Include="xunit.v3" Version="4.0.3" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Bogus" Version="35.6.3" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <PackageReference Include="MSTest.TestAdapter" Version="3.9.1" />
-    <PackageReference Include="MSTest.TestFramework" Version="3.9.1" />
-    <PackageReference Include="coverlet.collector" Version="6.0.4">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-    <PackageReference Include="Refit" Version="8.0.0" />
-	  <PackageReference Include="Riok.Mapperly" Version="4.2.1" />
-	  <PackageReference Include="System.Text.Json" Version="9.0.5" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="Resources\background.jpg">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
+    <None Update="Resources\background.jpg" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

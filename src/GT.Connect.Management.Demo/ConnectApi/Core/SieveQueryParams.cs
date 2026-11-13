@@ -1,4 +1,5 @@
-﻿
+﻿using Refit;
+
 namespace GT.Connect.Management.Demo.ConnectApi.Core;
 
 public class SieveQueryParams
@@ -10,9 +11,9 @@ public class SieveQueryParams
     public int? PageSize { get; set; }
 
     [AliasAs("filters")]
-    public string? FilterRendered => _filter?.ToString();
+    public string? FilterRendered => _filters.Count == 0 ? null : string.Join(',', _filters.Select(x => x.ToString()));
 
-    private Filter? _filter;
+    private readonly List<Filter> _filters = [];
 
     public SieveQueryParams()
     {
@@ -21,7 +22,12 @@ public class SieveQueryParams
 
     public SieveQueryParams(Filter filter)
     {
-        _filter = filter;
+        _filters.Add(filter);
+    }
+
+    public SieveQueryParams(IEnumerable<Filter> filters)
+    {
+        _filters.AddRange(filters);
     }
 
 }

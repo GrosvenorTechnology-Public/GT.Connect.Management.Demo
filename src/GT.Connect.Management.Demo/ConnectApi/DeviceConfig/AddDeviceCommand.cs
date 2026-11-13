@@ -26,5 +26,20 @@ public record AddDeviceCommand
     string? AdditionalField7,
     string? AdditionalField8,
     string? AdditionalField9,
-    string? AdditionalField10
-) ;
+    string? AdditionalField10,
+    bool AdditionalField1_IsSecure,
+    bool AdditionalField2_IsSecure,
+    bool AdditionalField3_IsSecure,
+    bool AdditionalField4_IsSecure,
+    bool AdditionalField5_IsSecure,
+    bool AdditionalField6_IsSecure,
+    bool AdditionalField7_IsSecure,
+    bool AdditionalField8_IsSecure,
+    bool AdditionalField9_IsSecure,
+    bool AdditionalField10_IsSecure,
+    string? Tags,
+    string? BioFilterTags,
+    Guid? DeviceId = null,
+    string? Notes = null,
+    bool LegacyDataDistributionEnabled = false
+);

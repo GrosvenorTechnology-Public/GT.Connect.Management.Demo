@@ -6,8 +6,9 @@ public record UpdateDeviceCommand
     Guid TenantId,
     string Name,
     bool IsEnabled,
-    bool IsIotEnabled,
-    string LegacyKey,
+    bool AzIoTEnabled,
+    string? LegacyKey,
+    string? LegacyKey2,
     string? BillingReference1,
     string? BillingReference2,
     string? BillingReference3,
@@ -32,5 +33,7 @@ public record UpdateDeviceCommand
     bool AdditionalField9_IsSecure,
     bool AdditionalField10_IsSecure,
     string? Tags,
-    string? BioFilterTags
+    string? BioFilterTags,
+    string? Notes = null,
+    bool? LegacyDataDistributionEnabled = null
 );

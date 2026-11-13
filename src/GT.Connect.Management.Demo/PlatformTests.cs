@@ -1,22 +1,21 @@
-﻿using GT.Connect.Management.Demo.ConnectApi.Platform;
+using GT.Connect.Management.Demo.ConnectApi.Auth;
 
 namespace GT.Connect.Management.Demo;
 
-[TestClass]
 public class PlatformTests
 {
-    [TestMethod]
+    [Fact]
     public async Task GetAccessToken()
     {
-        var authApi = RestService.For<IConnectApi>(
+        var authApi = RestService.For<IConnectApiAuth>(
             new HttpClient()
             {
                 BaseAddress = new Uri(Settings.GtConnectUrl)
             });
 
-        var response = await authApi.GetAccessToken(Settings.TenantId, Settings.TokenRequest);
+        var response = await authApi.GetAuthToken(Settings.TenantId, Settings.TokenRequest);
 
-        Assert.AreEqual("Bearer", response.Token_Type);
+        Assert.Equal("Bearer", response.Token_Type);
     }
 
 }

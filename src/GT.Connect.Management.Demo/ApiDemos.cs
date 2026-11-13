@@ -1,82 +1,87 @@
+using System.Diagnostics;
+using System.Net;
+using System.Reflection;
 using Bogus;
+using GT.Connect.Management.Demo.ConnectApi.ApplicationPackage;
 using GT.Connect.Management.Demo.ConnectApi.DeviceConfig;
 using GT.Connect.Management.Demo.ConnectApi.Organisation;
 using GT.Connect.Management.Demo.ConnectApi.People;
-using System.Diagnostics;
-using System.Reflection;
+using Gridify;
 
 namespace GT.Connect.Management.Demo;
 
-[TestClass]
 public class ApiDemos : ApiTestBase
 {
-
-    [TestMethod]
+    /// <summary>
+    /// Creates a channel partner and company node, a default clock group and some sample people.
+    /// Most of the other demos expect this to have been run first.
+    /// </summary>
+    [Fact]
     public async Task CreateTestCompany()
     {
         var api = await GetClient();
 
         //Find the partner node
         var rootNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Partner.ToString(), Operators.Equals))))
+            new SieveQueryParams(new Filter(nameof(NodeResponse.NodeType), nameof(NodeType.Partner), Operators.Equals))))
             .Single();
 
-        //Look for the 'Api Demo' node and create if not found
-        var childNodes = await api.GetNodeAndAllChildren(Settings.TenantId, rootNode.Id);
+        //Look for the 'Api Demo' node directly under the partner node and create if not found
+        //  GetChildNodesV2 returns the node itself plus its descendants down to nodeDepth levels
+        var childNodes = await api.GetChildNodesV2(Settings.TenantId, rootNode.Id, nodeDepth: 1);
         var cpNode = childNodes.SingleOrDefault(x => x.Name == "Api Demo");
         if (cpNode is null)
         {
             cpNode = await api.AddNode(Settings.TenantId,
-                new AddNodeCommmand(Settings.TenantId, rootNode.Id, "ChannelPartner", "Api Demo"));
+                new AddNodeCommand(Settings.TenantId, rootNode.Id, nameof(NodeType.ChannelPartner), "Api Demo"));
         }
 
         //Now Look for the 'InGen' node and create if not found
-        childNodes = await api.GetNodeAndAllChildren(Settings.TenantId, cpNode.Id);
+        childNodes = await api.GetChildNodesV2(Settings.TenantId, cpNode.Id, nodeDepth: 1);
         var cmpNode = childNodes.SingleOrDefault(x => x.Name == "InGen");
         if (cmpNode is null)
         {
             cmpNode = await api.AddNode(Settings.TenantId,
-            new AddNodeCommmand(Settings.TenantId, cpNode.Id, "Company", "InGen"));
+                new AddNodeCommand(Settings.TenantId, cpNode.Id, nameof(NodeType.Company), "InGen"));
         }
 
-        CompanyResponse? company = null;
+        CompanyResponse company;
         var retryCount = 3;
         while (true)
         {
             try
             {
-                //Find the Company so we can get it's ID, not that it can take a few seconds to appear
+                //Find the Company so we can get its ID, note that it can take a few seconds to appear
                 company = await api.GetCompanyByNodeId(Settings.TenantId, cmpNode.Id);
-                Assert.IsNotNull(company);
                 break;
             }
-            catch (ApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound && retryCount > 0)
+            catch (ApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound && retryCount > 0)
             {
-                await Task.Delay(1000);
+                await Task.Delay(1000, TestContext.Current.CancellationToken);
                 retryCount--;
             }
         }
 
-        //Add a default clock group (ExternalId is your ref for a clock group)
+        //Add a default clock group (ExternalId is your ref for a clock group), the lookup returns 404 when not found
         var clockGroupResponse = await api.GetClockGroupByExternalId(Settings.TenantId, cmpNode.Id, "1");
-        ClockGroupResponse? clockGroup = null;
-        if (clockGroupResponse.StatusCode == System.Net.HttpStatusCode.OK)
+        ClockGroupResponse clockGroup;
+        if (clockGroupResponse.StatusCode == HttpStatusCode.OK)
         {
             clockGroup = clockGroupResponse.Content!;
         }
         else
         {
             clockGroup = await api.AddClockGroup(Settings.TenantId, cmpNode.Id,
-                    new ClockGroupRequest(Settings.TenantId, cmpNode.Id, company.Id, "1", "Default Group", ""));
+                new ClockGroupRequest(Settings.TenantId, cmpNode.Id, company.Id, "1", "Default Group", ""));
         }
 
         //Now lets add some People to the Group
         Randomizer.Seed = new Random(1905);
-        for (int i = 0; i < 10; i++)
+        for (var i = 0; i < 10; i++)
         {
             var apiResponse = await api.GetPersonByExternalId(Settings.TenantId, company.NodeId, i.ToString());
-            PersonResponse? person = null;
-            if (apiResponse.StatusCode == System.Net.HttpStatusCode.OK)
+            PersonResponse person;
+            if (apiResponse.StatusCode == HttpStatusCode.OK)
             {
                 person = apiResponse.Content!;
             }
@@ -86,137 +91,112 @@ public class ApiDemos : ApiTestBase
                 person = await api.AddPerson(Settings.TenantId, company.NodeId,
                     new(cmpNode.Id, company.Id, p.FirstName, p.LastName, i.ToString(),
                         (1000 + i).ToString(), (1000 + i).ToString(), "", "EN", "", "", "", "", "", null, null));
-
-                //add an update, stressing how you have to copy every field
             }
 
-            await api.AddPersonToClockGroup(Settings.TenantId, company.NodeId,
-                clockGroup.Id, person.Id);
+            await api.AddPersonToClockGroup(Settings.TenantId, company.NodeId, clockGroup.Id, person.Id);
         }
-
-        Assert.IsTrue(true);
     }
-
 
     /// <summary>
     /// This test will find a device in the partner unallocated pool and transfer it to the company
     /// assign it and add it to a clock group.
     /// </summary>
-    /// <returns></returns>
-    [TestMethod]
+    [Fact]
     public async Task AllocateAndAssignDevice()
     {
         var api = await GetClient();
 
-        //Get the root node, this is where unallocated devices start
-        var rootNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Partner.ToString(), Operators.Equals))))
-            .Single();
-
-        //Get the commpany node, this is where we want to send the device
+        //Get the company node, this is where we want to send the device
         var cmpNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Company.ToString(), Operators.Equals))))
+            new SieveQueryParams(new Filter(nameof(NodeResponse.NodeType), nameof(NodeType.Company), Operators.Equals))))
             .Single(x => x.Name == "InGen");
 
-        //find the devices on the root partner node
-        var apiResponse = await api.GetDevices(Settings.TenantId, rootNode.Id,
-            new(new(nameof(Device.SerialNumber), "FP-GT8-BL~909000020", Operators.CaseInsensitiveStringEquals)));
-
-        if (apiResponse.StatusCode != System.Net.HttpStatusCode.OK)
+        //find the device by its serial number, the server returns 204 (so null here) if it is not found
+        var device = await api.GetDeviceBySerial(Settings.TenantId, "FP-GT8-BL~909000020");
+        if (device is null)
         {
-            // 204 is no devices, so have to check for OK
-            Assert.Fail($"No Devices Found, status code: {apiResponse.StatusCode}");
+            Assert.Fail("No device found");
         }
 
-        Assert.IsNotNull(apiResponse.Content, "There should be one device in the results");
-        var device = apiResponse.Content.Single();
-
         //Allocate the device into the company node, this returns an updated device record
-        device = await api.AllocateUnassignedDevice(Settings.TenantId, device.Id,
+        var allocateResponse = await api.AllocateUnassignedDevice(Settings.TenantId, device.Id,
             new(device.Id, Settings.TenantId, cmpNode.Id));
+        await allocateResponse.EnsureSuccessfulAsync();
+        device = allocateResponse.Content!;
 
         //In this example we're just adding the device at the root of the company node,
-        //  but this could have been a structral node under the commpany
-        device = await api.AssignDevice(Settings.TenantId, device.Id, new(device.Id, Settings.TenantId, cmpNode.Id));
+        //  but this could have been a structural node under the company
+        var assignResponse = await api.AssignDevice(Settings.TenantId, device.Id,
+            new(device.Id, Settings.TenantId, cmpNode.Id));
+        await assignResponse.EnsureSuccessfulAsync();
+        device = assignResponse.Content!;
 
         //Enable the device
         //  It's important to supply all the fields currently, as the update operation
-        //  is a full record updated, we do not currently support patches.
-        //  To make this easier, we user a mapper here
+        //  is a full record update, we do not currently support patches.
+        //  To make this easier, we use a mapper here
         var mapper = new MapperClasses();
 
-        if (device.IsEnabled == false)
+        if (!device.IsEnabled)
         {
             var updateCommand = mapper.Map(device) with
             {
                 IsEnabled = true,
             };
 
-            var updateResponse = await api.UpdateDevice(updateCommand);
+            await api.UpdateDevice(Settings.TenantId, device.Id, updateCommand);
         }
 
         //Add the device to the clock group
         var clockGroupResponse = await api.GetClockGroupByExternalId(Settings.TenantId, cmpNode.Id, "1");
-        await clockGroupResponse.EnsureSuccessStatusCodeAsync();
-        var cgResponse = await api.AddDeviceToClockGroup(Settings.TenantId, cmpNode.Id, 
-            clockGroupResponse.Content!.Id, 
+        await clockGroupResponse.EnsureSuccessfulAsync();
+        var linkResponse = await api.LinkDeviceToClockGroup(Settings.TenantId, cmpNode.Id,
+            clockGroupResponse.Content!.Id,
             device.Id);
-
-        Assert.IsTrue(true);
+        await linkResponse.EnsureSuccessfulAsync();
     }
 
     /// <summary>
-    /// This test will unasign a device and return it to the partner root node.
+    /// This test will unassign a device and return it to the partner root node.
     /// </summary>
-    /// <returns></returns>
-    [TestMethod]
+    [Fact]
     public async Task UnassignAndUnallocateDevice()
     {
         var api = await GetClient();
 
         //Get the root node, this is where unallocated devices start
         var rootNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Partner.ToString(), Operators.Equals))))
+            new SieveQueryParams(new Filter(nameof(NodeResponse.NodeType), nameof(NodeType.Partner), Operators.Equals))))
             .Single();
 
-        //Get the commpany node, this is where we want to send the device
-        var cmpNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Company.ToString(), Operators.Equals))))
-            .Single(x => x.Name == "InGen");
-
-        //find the devices on the company node
-        var apiResponse = await api.GetDevices(Settings.TenantId, cmpNode.Id,
-            new(new(nameof(Device.SerialNumber), "fp-gt8~99990001", Operators.CaseInsensitiveStringEquals)));
-
-        if (apiResponse.StatusCode != System.Net.HttpStatusCode.OK)
+        //find the device by its serial number, the server returns 204 (so null here) if it is not found
+        var device = await api.GetDeviceBySerial(Settings.TenantId, "fp-gt8~99990001");
+        if (device is null)
         {
-            // 204 is no devices, so have to check for OK
-            Assert.Fail($"No Devices Found, status code: {apiResponse.StatusCode}");
+            Assert.Fail("No device found");
         }
-
-        Assert.IsNotNull(apiResponse.Content, "There should be one device in the results");
-        var device = apiResponse.Content.Single();
 
         if (device.DeviceLifecycleState == "Assigned")
         {
-            //Allocate the device into the company node, this returns an updated device record
+            //Unassign the device, this returns an updated device record
             device = await api.UnassignDevice(Settings.TenantId, device.Id,
-            new(device.Id, Settings.TenantId));
+                new(device.Id, Settings.TenantId));
         }
 
         //Allocate the device back to the root partner node
-        device = await api.AllocateUnassignedDevice(Settings.TenantId, device.Id,
+        var allocateResponse = await api.AllocateUnassignedDevice(Settings.TenantId, device.Id,
             new(device.Id, Settings.TenantId, rootNode.Id));
+        await allocateResponse.EnsureSuccessfulAsync();
+        device = allocateResponse.Content!;
 
-        Assert.AreEqual("Partner", device.NodeType);
-        Assert.AreEqual("Unassigned", device.DeviceLifecycleState);
+        Assert.Equal(nameof(NodeType.Partner), device.NodeType);
+        Assert.Equal("Unassigned", device.DeviceLifecycleState);
     }
 
     /// <summary>
     /// This example will create a simple config file on a node and send it.
     /// </summary>
-    /// <returns></returns>
-    [TestMethod]
+    [Fact]
     public async Task CreateAndSendConfiguration()
     {
         //Note for simplicity we've hardcoded the FileTypeId here, but you can get them by
@@ -237,49 +217,50 @@ public class ApiDemos : ApiTestBase
 
         var api = await GetClient();
 
-        //Get the commpany node, this is where we want to send the device
+        //Get the company node, this is where we want to add the configuration
         var cmpNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Company.ToString(), Operators.Equals))))
+            new SieveQueryParams(new Filter(nameof(NodeResponse.NodeType), nameof(NodeType.Company), Operators.Equals))))
             .Single(x => x.Name == "InGen");
 
-        
-        var response = await api.GetConfigurationOnNode(Settings.TenantId, cmpNode.Id);
-        await response.EnsureSuccessStatusCodeAsync();
-
-        //The GetConfigurationOnNode function retuns a 204 if there is no content,
-        //  Refit does not like that when deserializing the response content, so have to check explicitly
-        DeviceConfiguration? policy = default;
-        if (response.StatusCode == System.Net.HttpStatusCode.OK)
-        {
-            policy = response.Content?.SingleOrDefault(x => x.Description == policyName);
-        }
+        //Look for an existing configuration with our name, using a Gridify filter
+        var response = await api.GetConfigurationOnNodeV2(Settings.TenantId, cmpNode.Id,
+            new GridifyQuery { Filter = $"{nameof(DeviceConfiguration.Description)}={policyName}", Page = 1, PageSize = 10 });
+        await response.EnsureSuccessfulAsync();
+        var policy = response.Content?.Data.FirstOrDefault();
 
         if (policy is not null)
         {
             //Policy exists, lets update instead
-            policy = await api.UpdateConfiguration(Settings.TenantId, policy.Id,
+            var updateResponse = await api.UpdateConfiguration(Settings.TenantId, policy.Id,
                 new(Settings.TenantId, policyName, policyData));
+            await updateResponse.EnsureSuccessfulAsync();
+            policy = updateResponse.Content!;
         }
         else
         {
-            policy = await api.AddConfigurationToNodeOrDevice(Settings.TenantId,
+            var addResponse = await api.AddConfigurationToNodeOrDevice(Settings.TenantId,
                 new(Settings.TenantId, cmpNode.Id, null, policyName, policyFileTypeId, policyData));
+            await addResponse.EnsureSuccessfulAsync();
+            policy = addResponse.Content!;
         }
 
         //Now send the policy to all devices under the company node.
-        await api.SynchroniseSelectedOnDeviceOrNode(Settings.TenantId,
+        var syncResponse = await api.SynchroniseSelected(Settings.TenantId,
             new SynchroniseSelectedCommand(Settings.TenantId, cmpNode.Id, null, Configs: [policy.Id]));
+        await syncResponse.EnsureSuccessfulAsync();
     }
 
     /// <summary>
-    /// This example will create a simple config file on a node and send it.
+    /// This example will upload a GT EasyClock application package, link it to the company node
+    /// and send it to all devices under that node.
     /// </summary>
-    /// <returns></returns>
-    [TestMethod]
+    [Fact]
     public async Task UploadApplicationAndSendToDevice()
     {
-        //Set this to the path of the GT8 application package
+        //Set this to the path of the GT8 application package, and the version details of that package
         var appFileName = @"c:\tmp\gteasyclock-v2.8.0-gtconnect.zip";
+        var appDisplayName = "GT EasyClock (2.8.0)";
+        var appVersionCode = "2080004";
 
         //Note for simplicity we've hardcoded the FileTypeId here, but you can get them by
         //  calling the /api/tenants/{{tenantId}}/device-config/fileTypes/family/{{deviceFamily}} or
@@ -288,82 +269,85 @@ public class ApiDemos : ApiTestBase
 
         var api = await GetClient();
 
-        //Get the commpany node, this is where we want to send the policy
+        //Get the company node, this is where we want to send the application
         var cmpNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Company.ToString(), Operators.Equals))))
+            new SieveQueryParams(new Filter(nameof(NodeResponse.NodeType), nameof(NodeType.Company), Operators.Equals))))
             .Single(x => x.Name == "InGen");
 
-        //First we need to request an upload url from the server 
+        //First we need to request an upload url from the server,
+        //  the package details (type, version etc.) are read from the package itself
         var uploadUrl = await api.GetUploadPackageUrl(Settings.TenantId,
-            new GetUploadUrlCommand(Settings.TenantId, cmpNode.Id, gtApplicationFileType, appFileName, "GT-EasyClock (2.8.0)"));
+            new GetPackageUploadUrlCommand(Settings.TenantId, Path.GetFileName(appFileName)));
 
-        //Next we PUT the file to the server  
-        using var fileReader = new StreamReader(appFileName);
-        var client = new HttpClient();
-        var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl.Url)
+        //Next we PUT the file to the server
+        using var uploadClient = new HttpClient();
+        await using var fileStream = File.OpenRead(appFileName);
+        using var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl.Url)
         {
-            Content = new StreamContent(fileReader.BaseStream)
+            Content = new StreamContent(fileStream)
         };
         request.Headers.Add("x-ms-blob-type", "BlockBlob");  //the target is azure blob storage and needs this header
-        var uploadResponse = await client.SendAsync(request);
+        using var uploadResponse = await uploadClient.SendAsync(request, TestContext.Current.CancellationToken);
+        uploadResponse.EnsureSuccessStatusCode();
 
         //Once the file is uploaded, the server needs to process the file, so we need to poll till it's finished
+        //  States: InProgress / Processing / Completed / Failed / Uncompress / Moving / Uploading
+        var timeout = DateTime.UtcNow.AddMinutes(5);
         GetUploadStatusResponse statusResponse;
         do
         {
             statusResponse = await api.GetUploadStatus(Settings.TenantId, uploadUrl.Id);
             Debug.WriteLine(statusResponse.State);
-            await Task.Delay(1000);
-        } while (statusResponse.State != "Completed" && statusResponse.State != "Failed");
-        // InProgress / Processing / Completed / Failed / Uncompress / Moving / Uploading
+            await Task.Delay(1000, TestContext.Current.CancellationToken);
+        } while (statusResponse.State is not ("Completed" or "Failed") && DateTime.UtcNow < timeout);
 
         if (statusResponse.State != "Completed")
         {
             Assert.Fail($"{statusResponse.State} : {statusResponse.FaultSummary}");
         }
 
-        //Now get the uploaded package ID
-        var response = await api.GetPackages(Settings.TenantId);
-        await response.EnsureSuccessStatusCodeAsync();
-        GetPackagesResponse? package = default;
-        if (response.StatusCode == System.Net.HttpStatusCode.OK)
+        //Now find the uploaded package, newest first in case it has been uploaded before
+        var response = await api.GetAppPackages(Settings.TenantId, new GridifyQuery
         {
-            package = response.Content?.SingleOrDefault(x => x.FileTypeId == gtApplicationFileType && x.VersionCode == "2080004");
-            if (package is null)
-            {
-                Assert.Fail("Could not find package after upload");
-            }
-        }
-        else
+            Filter = $"{nameof(AppPackage.FileTypeId)}={gtApplicationFileType},{nameof(AppPackage.VersionCode)}={appVersionCode}",
+            OrderBy = $"{nameof(AppPackage.CreatedOn)} desc",
+            Page = 1,
+            PageSize = 1
+        });
+        await response.EnsureSuccessfulAsync();
+        var package = response.Content?.Data.FirstOrDefault();
+        if (package is null)
         {
             Assert.Fail("Could not find package after upload");
         }
 
         //Link the application to a node so we can send to the device
-        var link = await api.AddPackageToDeviceOrNode(Settings.TenantId, 
-            new AddPackageToDeviceOrNodeCommand(Settings.TenantId, package.Id, cmpNode.Id, null, 
-            "GT EasyClock (2.8.0)", package.FileTypeId));
+        var link = await api.AddPackageToDeviceOrNode(Settings.TenantId,
+            new AddPackageToDeviceOrNodeCommand(Settings.TenantId, package.Id, cmpNode.Id, null,
+                appDisplayName, package.FileTypeId));
 
-        //Now send the policy to all devices under the company node.
-        var apiResponse = await api.SynchroniseSelectedOnDeviceOrNode(Settings.TenantId,
+        //Now send the application to all devices under the company node.
+        var syncResponse = await api.SynchroniseSelected(Settings.TenantId,
             new SynchroniseSelectedCommand(Settings.TenantId, cmpNode.Id, null,
-            Applications: [link.Id],
-            Assets: [], //Note in early versions, all the arrays must be non null, fixed dec-2023
-            Configs: [],
-            Consents: [],
-            Firmwares: []));
+                Applications: [link.Id],
+                Assets: [], //Note in early versions, all the arrays must be non null, fixed dec-2023
+                Configs: [],
+                Consents: [],
+                Firmwares: []));
+        await syncResponse.EnsureSuccessfulAsync();
     }
 
     /// <summary>
-    /// This example will create a simple config file on a node and send it.
+    /// This example will upload a background image asset, link it to the company node
+    /// and send it to all devices under that node.
     /// </summary>
-    /// <returns></returns>
-    [TestMethod]
+    [Fact]
     public async Task UploadBackgroundAndSendToDevice()
     {
-        //Set this to the path of the GT8 application package
-        var location = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-        var appFileName = Path.Combine(location!, "Resources", "background.jpg");
+        //The image is copied to the output folder on build
+        var location = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
+        var imageFileName = Path.Combine(location, "Resources", "background.jpg");
+        var assetDisplayName = "Example Background Image";
 
         //Note for simplicity we've hardcoded the FileTypeId here, but you can get them by
         //  calling the /api/tenants/{{tenantId}}/device-config/fileTypes/family/{{deviceFamily}} or
@@ -372,183 +356,163 @@ public class ApiDemos : ApiTestBase
 
         var api = await GetClient();
 
-        //Get the commpany node, this is where we want to send the policy
+        //Get the company node, this is where we want to send the asset
         var cmpNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Company.ToString(), Operators.Equals))))
+            new SieveQueryParams(new Filter(nameof(NodeResponse.NodeType), nameof(NodeType.Company), Operators.Equals))))
             .Single(x => x.Name == "InGen");
 
-        //First we need to request an upload url from the server 
+        //First we need to request an upload url from the server, the asset is stored against the node
         var uploadUrl = await api.GetUploadAssetUrl(Settings.TenantId,
-            new GetUploadUrlCommand(Settings.TenantId, cmpNode.Id, fileType, appFileName, "Example Background Image"));
+            new GetAssetUploadUrlCommand(Settings.TenantId, fileType, Path.GetFileName(imageFileName),
+                assetDisplayName, cmpNode.Id));
 
-        //Next we PUT the file to the server  
-        using var fileReader = new StreamReader(appFileName);
-        var client = new HttpClient();
-        var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl.Url)
+        //Next we PUT the file to the server
+        using var uploadClient = new HttpClient();
+        await using var fileStream = File.OpenRead(imageFileName);
+        using var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl.Url)
         {
-            Content = new StreamContent(fileReader.BaseStream)
+            Content = new StreamContent(fileStream)
         };
         request.Headers.Add("x-ms-blob-type", "BlockBlob");  //the target is azure blob storage and needs this header
-        var uploadResponse = await client.SendAsync(request);
+        using var uploadResponse = await uploadClient.SendAsync(request, TestContext.Current.CancellationToken);
+        uploadResponse.EnsureSuccessStatusCode();
 
         //Once the file is uploaded, the server needs to process the file, so we need to poll till it's finished
+        //  States: InProgress / Processing / Completed / Failed / Uncompress / Moving / Uploading
+        var timeout = DateTime.UtcNow.AddMinutes(5);
         GetUploadStatusResponse statusResponse;
         do
         {
             statusResponse = await api.GetUploadStatus(Settings.TenantId, uploadUrl.Id);
             Debug.WriteLine(statusResponse.State);
-            await Task.Delay(1000);
-        } while (statusResponse.State != "Completed" && statusResponse.State != "Failed");
-        // InProgress / Processing / Completed / Failed / Uncompress / Moving / Uploading
+            await Task.Delay(1000, TestContext.Current.CancellationToken);
+        } while (statusResponse.State is not ("Completed" or "Failed") && DateTime.UtcNow < timeout);
 
         if (statusResponse.State != "Completed")
         {
             Assert.Fail($"{statusResponse.State} : {statusResponse.FaultSummary}");
         }
 
-        //Now get the uploaded package ID
-        var response = await api.GetAssets(Settings.TenantId, cmpNode.Id);
-        await response.EnsureSuccessStatusCodeAsync();
-        GetAssetsResponse? asset = default;
-        if (response.StatusCode == System.Net.HttpStatusCode.OK)
+        //Now find the uploaded asset, newest first in case this demo has been run before
+        var response = await api.GetAssetsOnNodeV2(Settings.TenantId, cmpNode.Id, new GridifyQuery
         {
-            asset = response.Content?.SingleOrDefault(x => x.DisplayName == "Example Background Image");
-            if (asset is null)
-            {
-                Assert.Fail("Could not find asset after upload");
-            }
-        }
-        else
+            Filter = $"{nameof(GetAssetsResponse.DisplayName)}={assetDisplayName}",
+            OrderBy = $"{nameof(GetAssetsResponse.CreatedOn)} desc",
+            Page = 1,
+            PageSize = 1
+        });
+        await response.EnsureSuccessfulAsync();
+        var asset = response.Content?.Data.FirstOrDefault();
+        if (asset is null)
         {
             Assert.Fail("Could not find asset after upload");
         }
 
-        //Link the application to a node so we can send to the device
-        var link = await api.AddAssetToDeviceOrNode(Settings.TenantId,
+        //Link the asset to a node so we can send to the device
+        var linkResponse = await api.AddAssetToDeviceOrNode(Settings.TenantId,
             new AddAssetToDeviceOrNodeCommand(Settings.TenantId, asset.Id, cmpNode.Id, null));
+        await linkResponse.EnsureSuccessfulAsync();
 
-        //Now send the policy to all devices under the company node.
-        var apiResponse = await api.SynchroniseSelectedOnDeviceOrNode(Settings.TenantId,
+        //Now send the asset to all devices under the company node.
+        var syncResponse = await api.SynchroniseSelected(Settings.TenantId,
             new SynchroniseSelectedCommand(Settings.TenantId, cmpNode.Id, null,
-            Applications: [],
-            Assets: [link.Id], 
-            Configs: [],
-            Consents: [],
-            Firmwares: []));
-
-        await apiResponse.EnsureSuccessStatusCodeAsync();
-
-        Assert.AreEqual(System.Net.HttpStatusCode.OK, apiResponse.StatusCode);
+                Applications: [],
+                Assets: [linkResponse.Content!.Id],
+                Configs: [],
+                Consents: [],
+                Firmwares: []));
+        await syncResponse.EnsureSuccessfulAsync();
     }
-
 
     /// <summary>
     /// This example will send a reboot command to a device.
     ///  This same method can be used to send restart/reconnect/reset commands.
     /// </summary>
-    /// <returns></returns>
-    [TestMethod]
+    [Fact]
     public async Task RebootDevice()
     {
         var api = await GetClient();
 
-        //Get the root node, this is where unallocated devices start
-        var rootNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Partner.ToString(), Operators.Equals))))
-            .Single();
-
-        //Get the commpany node, this is where we want to send the device
-        var cmpNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Company.ToString(), Operators.Equals))))
-            .Single(x => x.Name == "InGen");
-
-        //find the devices on the root partner node
-        var apiResponse = await api.GetDevices(Settings.TenantId, rootNode.Id,
-            new(new(nameof(Device.SerialNumber), "fp-gt8~99990001", Operators.CaseInsensitiveStringEquals)));
-
-        if (apiResponse.StatusCode != System.Net.HttpStatusCode.OK)
+        //find the device by its serial number, the server returns 204 (so null here) if it is not found
+        var device = await api.GetDeviceBySerial(Settings.TenantId, "fp-gt8~99990001");
+        if (device is null)
         {
-            // 204 is no devices, so have to check for OK
-            Assert.Fail($"No Devices Found, status code: {apiResponse.StatusCode}");
+            Assert.Fail("No device found");
         }
 
-        Assert.IsNotNull(apiResponse.Content, "There should be one device in the results");
-        var device = apiResponse.Content.Single();
-
+        //The server accepts the command with a 204, a success here means the command was queued,
+        //  not that the device has completed it. Use the device command history to track it.
         var commandResponse = await api.SendStructuredFirmwareCommand(Settings.TenantId, device.Id, new StructuredCommand
         {
             CommandName = "reboot",
             Entity = "device"
         });
-
-        Assert.IsTrue(commandResponse.Content);
+        await commandResponse.EnsureSuccessStatusCodeAsync();
     }
-
 
     /// <summary>
     /// This test will find all devices and enable them.
     /// </summary>
-    /// <returns></returns>
-    [TestMethod]
+    [Fact]
     public async Task EnableDevices()
     {
         var api = await GetClient();
 
-        //Get the root node, this is where unallocated devices start
+        //Get the root node
         var rootNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Partner.ToString(), Operators.Equals))))
+            new SieveQueryParams(new Filter(nameof(NodeResponse.NodeType), nameof(NodeType.Partner), Operators.Equals))))
             .Single();
 
-        //find the devices on the root partner node
-        var apiResponse = await api.GetDevices(Settings.TenantId, rootNode.Id,
-            new() { GetChildren = true });
-
-        if (apiResponse.StatusCode != System.Net.HttpStatusCode.OK)
+        //Get all the devices on the root partner node and all of its child nodes, a page at a time
+        var devices = new List<Device>();
+        var query = new GridifyQuery { Page = 1, PageSize = 100 };
+        while (true)
         {
-            // 204 is no devices, so have to check for OK
-            Assert.Fail($"No Devices Found, status code: {apiResponse.StatusCode}");
+            var apiResponse = await api.GetDevicesV2(Settings.TenantId, rootNode.Id, getChildren: true, gridifyModel: query);
+            await apiResponse.EnsureSuccessfulAsync();
+            var page = apiResponse.Content!;
+            devices.AddRange(page.Data);
+
+            if (!page.Data.Any() || devices.Count >= page.Count)
+            {
+                break;
+            }
+            query.Page++;
         }
 
-        Assert.AreEqual(100, apiResponse.Content?.Count);
-
-        //Finally enable the device
+        //Finally enable the devices
         //  It's important to supply all the fields currently, as the update operation
-        //  is a full record updated, we do not currently support patches.
-        //  To make this easier, we user a mapper here
-        
+        //  is a full record update, we do not currently support patches.
+        //  To make this easier, we use a mapper here
         var mapper = new MapperClasses();
 
-        foreach (var device in apiResponse.Content ?? [])
+        foreach (var device in devices)
         {
-            if (device.IsEnabled == false)
+            if (!device.IsEnabled)
             {
                 var updateCommand = mapper.Map(device) with
                 {
                     IsEnabled = true,
                 };
 
-                var updateResponse = await api.UpdateDevice(updateCommand);
-                await Task.Delay(500);
+                await api.UpdateDevice(Settings.TenantId, device.Id, updateCommand);
+                await Task.Delay(500, TestContext.Current.CancellationToken);
             }
         }
-        
-
-        //Assert.AreEqual("Assigned", device.DeviceLifecycleState);
     }
 
     /// <summary>
-    /// This example will create a consent policy and assign it to a company
-    /// // and send it to all devices under the company node.
+    /// This example will create a consent policy, activate it on a company
+    /// and send it to all devices under the company node.
     /// </summary>
-    /// <returns></returns>
-    [TestMethod]
+    [Fact]
     public async Task CreateAndSendConsentPolicyForCompany()
     {
         var api = await GetClient();
 
-        //Get the commpany node, this is where we want to send the policy
+        //Get the company node, this is where we want to send the policy
         var cmpNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Company.ToString(), Operators.Equals))))
+            new SieveQueryParams(new Filter(nameof(NodeResponse.NodeType), nameof(NodeType.Company), Operators.Equals))))
             .Single(x => x.Name == "InGen");
 
         var company = await api.GetCompanyByNodeId(Settings.TenantId, cmpNode.Id);
@@ -557,44 +521,43 @@ public class ApiDemos : ApiTestBase
         var consentCommand = new CreateConsentCommand(Settings.TenantId, cmpNode.Id, company.Id,
             $"Api Demo Consent {DateTime.UtcNow:g}", new Guid("DBFF5D03-11CA-4539-C65A-08D97769F994"), 365, 30, 0);
         var agreementResponse = await api.AddConsentAgreementToCompany(Settings.TenantId, cmpNode.Id, consentCommand);
-        await agreementResponse.EnsureSuccessStatusCodeAsync();
-        var agreeementId = agreementResponse.Content!.Id;
+        await agreementResponse.EnsureSuccessfulAsync();
+        var agreementId = agreementResponse.Content!.Id;
 
-        //Create an English consent text, you can add as many lanagues as you like
+        //Create an English consent text, you can add as many languages as you like
         var consentTextCommand = new CreateConsentAgreementTextCommand(Settings.TenantId, cmpNode.Id,
-            agreeementId, "Api Demo Consent - EN", 
+            agreementId, "Api Demo Consent - EN",
             "EN", "This is the consent text for the Api Demo Consent");
-        var textResponse = await api.AddConsentTextToAgreement(Settings.TenantId, cmpNode.Id, 
+        var textResponse = await api.AddConsentTextToAgreement(Settings.TenantId, cmpNode.Id,
                 consentTextCommand);
-        await textResponse.EnsureSuccessStatusCodeAsync();
+        await textResponse.EnsureSuccessfulAsync();
 
         //Now make the consent active on the company.
-        var linkReponse = await api.ActivateConsentOnCompany(Settings.TenantId, cmpNode.Id,
-            new ActivateConsentCommand(cmpNode.Id, agreeementId));
+        //  Only one consent can be active per credential type, the server returns 409 if one already exists
+        var linkResponse = await api.ActivateConsentOnCompany(Settings.TenantId, cmpNode.Id,
+            new ActivateConsentCommand(cmpNode.Id, agreementId));
 
         //Now send the policy to all devices under the company node.
-        var apiResponse = await api.SynchroniseSelectedOnDeviceOrNode(Settings.TenantId,
+        var syncResponse = await api.SynchroniseSelected(Settings.TenantId,
             new SynchroniseSelectedCommand(Settings.TenantId, cmpNode.Id, null,
-            Applications: [],
-            Assets: [], 
-            Configs: [],
-            Consents: [linkReponse.Id],
-            Firmwares: []));
+                Applications: [],
+                Assets: [],
+                Configs: [],
+                Consents: [linkResponse.Id],
+                Firmwares: []));
+        await syncResponse.EnsureSuccessfulAsync();
     }
-
-
 
     /// <summary>
     /// This example shows how to perform a sync of users from an external system.
-    /// In this example we generate a sample list of employees and clocks and sync.
-    /// The sync process will first add or update the clock groups then remove any users that should no longer exist.
+    /// In this example we generate a sample list of employees and clock groups and sync.
+    /// The sync process will first add or update the clock groups then remove any that should no longer exist.
     /// The process is then repeated for employees, adding or updating them as needed.
-    /// In  both cases, the external ID is used as the common identifier between the external system and GTC.
+    /// In both cases, the external ID is used as the common identifier between the external system and GTC.
     /// It is assumed that the external ID is unique and immutable for each clock group/employee.
-    /// For Employees, badge code and are also required to be unique if provided.
+    /// For Employees, badge code and keypad id are also required to be unique if provided.
     /// </summary>
-    /// <returns></returns>
-    [TestMethod]
+    [Fact]
     public async Task SyncEmployeeInCompany()
     {
         var api = await GetClient();
@@ -602,27 +565,44 @@ public class ApiDemos : ApiTestBase
 
         //Find the partner node
         var rootNode = (await api.GetNodes(Settings.TenantId,
-            new(new(nameof(NodeResponse.NodeType), NodeType.Partner.ToString(), Operators.Equals))))
+            new SieveQueryParams(new Filter(nameof(NodeResponse.NodeType), nameof(NodeType.Partner), Operators.Equals))))
             .Single();
 
-        //Look for the 'Api Demo' node 
-        var childNodes = await api.GetNodeAndAllChildren(Settings.TenantId, rootNode.Id);
+        //Look for the 'Api Demo' node
+        var childNodes = await api.GetChildNodesV2(Settings.TenantId, rootNode.Id, nodeDepth: 1);
         var cpNode = childNodes.SingleOrDefault(x => x.Name == "Api Demo");
-        Assert.IsNotNull(cpNode, "Api Demo node not found, please run CreateTestCompany first.");
+        if (cpNode is null)
+        {
+            Assert.Fail("Api Demo node not found, please run CreateTestCompany first.");
+        }
 
-        //Now Look for the 'InGen' node and create if not found
-        childNodes = await api.GetNodeAndAllChildren(Settings.TenantId, cpNode.Id);
+        //Now look for the 'InGen' node
+        childNodes = await api.GetChildNodesV2(Settings.TenantId, cpNode.Id, nodeDepth: 1);
         var cmpNode = childNodes.SingleOrDefault(x => x.Name == "InGen");
-        Assert.IsNotNull(cmpNode, "InGen node not found, please run CreateTestCompany first.");
+        if (cmpNode is null)
+        {
+            Assert.Fail("InGen node not found, please run CreateTestCompany first.");
+        }
 
-        //Find the Company so we can get it's ID
+        //Find the Company so we can get its ID
         var company = await api.GetCompanyByNodeId(Settings.TenantId, cmpNode.Id);
-        Assert.IsNotNull(company);
 
-        //Get the existing clock groups
-        var clockGroupsResponse = await api.GetClockGroups(Settings.TenantId, cmpNode.Id);
-        await clockGroupsResponse.EnsureSuccessStatusCodeAsync();
-        var clockGroups = clockGroupsResponse.Content ?? [];
+        //Get the existing clock groups, a page at a time
+        var clockGroups = new List<ClockGroupResponse>();
+        var clockGroupQuery = new GridifyQuery { Page = 1, PageSize = 100 };
+        while (true)
+        {
+            var clockGroupsResponse = await api.GetClockGroupsV2(Settings.TenantId, cmpNode.Id, clockGroupQuery);
+            await clockGroupsResponse.EnsureSuccessfulAsync();
+            var page = clockGroupsResponse.Content!;
+            clockGroups.AddRange(page.Data);
+
+            if (!page.Data.Any() || clockGroups.Count >= page.Count)
+            {
+                break;
+            }
+            clockGroupQuery.Page++;
+        }
 
         //Add or update the clock groups based on the sample data
         foreach (var sampleClockGroup in SampleClockGroups)
@@ -631,26 +611,27 @@ public class ApiDemos : ApiTestBase
             if (cg is null)
             {
                 //Does not exist, so create it
-                await api.AddClockGroup(Settings.TenantId, cmpNode.Id, new ClockGroupRequest(Settings.TenantId, cmpNode.Id, company.Id, sampleClockGroup.ExternalId, sampleClockGroup.Name, ""));
+                var newClockGroup = await api.AddClockGroup(Settings.TenantId, cmpNode.Id,
+                    new ClockGroupRequest(Settings.TenantId, cmpNode.Id, company.Id, sampleClockGroup.ExternalId, sampleClockGroup.Name, ""));
+                clockGroups.Add(newClockGroup);
             }
-            else
+            else if (cg.Name != sampleClockGroup.Name)
             {
-                //Exists so see if the name has changed
-                if (cg.Name != sampleClockGroup.Name)
+                //Exists, but the name has changed so update it
+                //  Note the update replaces every field (including Tags), so map the existing record and change what we need
+                var cgUpdateRequest = mapper.Map(cg) with
                 {
-                    //Update the name if it does not match
-                    var cgUpdateRequest = mapper.Map(cg) with
-                    {
-                        Name = sampleClockGroup.Name,
-                    };
-                    await api.UpdateClockGroup(Settings.TenantId, cmpNode.Id, cg.Id, cgUpdateRequest);
-                }
+                    Name = sampleClockGroup.Name,
+                };
+                await api.UpdateClockGroup(Settings.TenantId, cmpNode.Id, cg.Id, cgUpdateRequest);
             }
         }
 
-        //Get a list of clock groups that need to be deleted
-        var toDelete = clockGroups.Where(x => !SampleClockGroups.Any(y => x.ExternalId == y.ExternalId)).ToList();
-        foreach (var cg in toDelete)
+        //Delete clock groups that are no longer in the sample data
+        var clockGroupsToDelete = clockGroups
+            .Where(x => !SampleClockGroups.Any(y => x.ExternalId == y.ExternalId))
+            .ToList();
+        foreach (var cg in clockGroupsToDelete)
         {
             if (cg.ExternalId == "1")
             {
@@ -660,130 +641,132 @@ public class ApiDemos : ApiTestBase
 
             //Delete the clock group - All users must be removed first
             await api.DeleteClockGroup(Settings.TenantId, cmpNode.Id, cg.Id);
+            clockGroups.Remove(cg);
         }
-
-
-        //Add employees
-
-        //First refresh the list of clock groups
-        //Get the existing clock groups
-        clockGroupsResponse = await api.GetClockGroups(Settings.TenantId, cmpNode.Id);
-        await clockGroupsResponse.EnsureSuccessStatusCodeAsync();
-        clockGroups = clockGroupsResponse.Content ?? [];
 
         //Then loop over the list of sample employees and add or update them
         var sampleEmployees = GenerateSampleEmployees();
         foreach (var employee in sampleEmployees)
         {
-            //The external ID is the common identifier between external systems and GTC
+            //The external ID is the common identifier between external systems and GTC, the lookup returns 404 when not found
             var apiResponse = await api.GetPersonByExternalId(Settings.TenantId, company.NodeId, employee.Id);
-            PersonResponse? person = null;
-            if (apiResponse.StatusCode == System.Net.HttpStatusCode.OK)
+            PersonResponse person;
+            if (apiResponse.StatusCode == HttpStatusCode.OK)
             {
-                person = apiResponse.Content ?? throw new ApplicationException("Person should not be null here.");
+                person = apiResponse.Content ?? throw new InvalidOperationException("Person should not be null here.");
+
                 //Do a simple check if anything has changed, and if so update
-                if (person.Surname != employee.GivenName ||
-                    person.Firstname != employee.FamilyName ||
+                if (person.Firstname != employee.GivenName ||
+                    person.Surname != employee.FamilyName ||
                     person.BadgeCode != employee.BadgeCode ||
                     person.KeyPad != employee.KeypadId ||
                     person.Language != employee.Language)
                 {
                     //Update the person with the new details
+                    //  The update is a full record update, so we map the existing record and change the fields we need
                     var updateCommand = mapper.Map(person) with
                     {
-                        Surname = employee.GivenName,
-                        Firstname = employee.FamilyName,
+                        Firstname = employee.GivenName,
+                        Surname = employee.FamilyName,
                         BadgeCode = employee.BadgeCode,
                         KeyPad = employee.KeypadId,
                         Language = employee.Language
                     };
-                    person = await api.UpdatePerson(Settings.TenantId, company.NodeId, person.Id, updateCommand);
-                }
-
-                foreach (var group in employee.DistributionGroups)
-                {
-                    //Match the external ID to a clock Group
-                    var cg = clockGroups.Single(x => x.ExternalId == group);
-                    //Add the person to the distribution group
-                    await api.AddPersonToClockGroup(Settings.TenantId, company.NodeId, cg.Id, person.Id);
+                    var updateResponse = await api.UpdatePerson(Settings.TenantId, company.NodeId, person.Id, updateCommand);
+                    await updateResponse.EnsureSuccessfulAsync();
+                    person = updateResponse.Content!;
                 }
             }
-            else
+            else if (apiResponse.StatusCode == HttpStatusCode.NotFound)
             {
                 person = await api.AddPerson(Settings.TenantId, company.NodeId,
                     new(cmpNode.Id, company.Id, employee.GivenName, employee.FamilyName, employee.Id,
                         employee.BadgeCode, employee.KeypadId, "", employee.Language, "", "", "", "", "", null, null));
+            }
+            else
+            {
+                //Don't treat any other failure (auth, permissions, server error) as 'missing', or we'd create duplicates
+                await apiResponse.EnsureSuccessfulAsync();
+                continue;
+            }
 
-                foreach (var group in employee.DistributionGroups)
-                {
-                    //Match the external ID to a clock Group
-                    var cg = clockGroups.Single(x => x.ExternalId == group);
-                    //Add the person to the distribution group
-                    await api.AddPersonToClockGroup(Settings.TenantId, company.NodeId, cg.Id, person.Id);
-                }
+            foreach (var group in employee.DistributionGroups)
+            {
+                //Match the external ID to a clock Group, and add the person to it
+                var cg = clockGroups.Single(x => x.ExternalId == group);
+                await api.AddPersonToClockGroup(Settings.TenantId, company.NodeId, cg.Id, person.Id);
             }
         }
 
-        //Reconcile employee list
-        var peopleResponse = await api.GetPeople(Settings.TenantId, company.NodeId);
-        await peopleResponse.EnsureSuccessStatusCodeAsync();
-        var people = peopleResponse.Content ?? [];
-        var peopleToDelete = people.Where(x => !sampleEmployees.Any(y => x.ExternalId == y.Id)).ToList();
-        foreach (var person in peopleToDelete)
+        //Reconcile employee list, removing anyone no longer in the source system
+        //  First get everyone in the company, a page at a time
+        var people = new List<PersonResponse>();
+        var peopleQuery = new GridifyQuery { Page = 1, PageSize = 100 };
+        while (true)
         {
-            //Delete the clock group - All users must be removed first
-            await api.DeletePerson(Settings.TenantId, cmpNode.Id, person.Id);
+            var peopleResponse = await api.GetPeopleV2(Settings.TenantId, company.NodeId, peopleQuery);
+            await peopleResponse.EnsureSuccessfulAsync();
+            var page = peopleResponse.Content!;
+            people.AddRange(page.Data);
+
+            if (!page.Data.Any() || people.Count >= page.Count)
+            {
+                break;
+            }
+            peopleQuery.Page++;
         }
 
-        Assert.IsTrue(true);
+        var peopleToDelete = people.Where(x => !sampleEmployees.Any(y => x.ExternalId == y.Id));
+        foreach (var person in peopleToDelete)
+        {
+            await api.DeletePerson(Settings.TenantId, company.NodeId, person.Id);
+        }
     }
 
-    private static List<(string ExternalId, string Name)> SampleClockGroups =
+    private static readonly List<(string ExternalId, string Name)> SampleClockGroups =
     [
-            ("10", "Aberdeen"),
-            ("11", "Bangor"),
-            ("12", "Bath"),
-            ("13", "Birmingham"),
-            ("14", "Cambridge"),
-            ("15", "Canterbury"),
-            ("16", "Gloucester"),
-            ("17", "Leicester"),
-            ("18", "Milton Keynes"),
-            ("19", "Nottingham"),
-            ("20", "Ripon"),
-            ("21", "Southampton"),
-            ("22", "Wells"),
-            ("23", "York")
-        ];
-
+        ("10", "Aberdeen"),
+        ("11", "Bangor"),
+        ("12", "Bath"),
+        ("13", "Birmingham"),
+        ("14", "Cambridge"),
+        ("15", "Canterbury"),
+        ("16", "Gloucester"),
+        ("17", "Leicester"),
+        ("18", "Milton Keynes"),
+        ("19", "Nottingham"),
+        ("20", "Ripon"),
+        ("21", "Southampton"),
+        ("22", "Wells"),
+        ("23", "York")
+    ];
 
     public record SampleEmployee(Guid RawId, string Id, string GivenName, string FamilyName, string Language,
-        List<string>DistributionGroups, string BadgeCode, string KeypadId);
+        List<string> DistributionGroups, string BadgeCode, string KeypadId);
 
+    /// <summary>
+    /// Generates a repeatable set of sample employees, the subset returned changes through the day
+    /// so that repeated runs of <see cref="SyncEmployeeInCompany"/> exercise adds, updates and deletes.
+    /// </summary>
     public static List<SampleEmployee> GenerateSampleEmployees()
     {
         Randomizer.Seed = new Random(8675309);
         var data = Enumerable.Range(0, 100)
-            .Select(x => new Person())
+            .Select(_ => new Person())
             .Select(x =>
             {
-                var id = x.Random.Digits(5).Select(x => x.ToString()).Aggregate((i, j) => i + j);
-                return new SampleEmployee (x.Random.Uuid(), id, x.FirstName, x.LastName, "en",
+                var id = string.Concat(x.Random.Digits(5));
+                return new SampleEmployee(x.Random.Uuid(), id, x.FirstName, x.LastName, "en",
                     [SampleClockGroups[x.Random.Number(SampleClockGroups.Count - 1)].ExternalId],
-                    id, id );
+                    id, id);
             })
             .ToList();
 
-        //Deal with duplicate external IDs
-        var duplicates = data.GroupBy(x => x.Id).Where(x => x.Count() > 1).SelectMany(x => x.ToArray()).ToList();
-        foreach (var duplicate in duplicates)
-        {
-            data.Remove(duplicate);
-        }
+        //Remove any employees with duplicate external IDs
+        var duplicateIds = data.GroupBy(x => x.Id).Where(x => x.Count() > 1).Select(x => x.Key).ToHashSet();
+        data.RemoveAll(x => duplicateIds.Contains(x.Id));
 
         var itemsToSkip = DateTime.UtcNow.Hour * 2;
-        data = [.. data.Skip(itemsToSkip).Take(10)];
-        return data;
+        return [.. data.Skip(itemsToSkip).Take(10)];
     }
 }
-
